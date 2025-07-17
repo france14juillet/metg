@@ -426,27 +426,65 @@ class METG(nn.Module):
             
         return anomaly_scores
     
-    def detect_anomalies(self, x: torch.Tensor, threshold: Optional[float] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def detect_anomalies(self, x: torch.Tensor, threshold: Optional[float] = None, 
+                        threshold_percentile: Optional[float] = None,
+                        aggregation_method: str = 'max',
+                        min_anomaly_ratio: float = 0.1) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Detect anomalies in input sequences.
+        Detect anomalies in input sequences with configurable thresholds and aggregation.
         
         Args:
             x: Input tensor (batch_size, seq_len, input_dim)
-            threshold: Anomaly threshold (if None, uses 95th percentile)
+            threshold: Fixed anomaly threshold (overrides threshold_percentile if provided)
+            threshold_percentile: Percentile for threshold (default: None, uses 99th percentile)
+            aggregation_method: Method to aggregate time-step scores to sequence level
+                               Options: 'max', 'mean', 'min_count'
+            min_anomaly_ratio: For 'min_count' method, minimum ratio of anomalous time steps
             
         Returns:
-            anomaly_scores: Computed anomaly scores
-            anomaly_labels: Binary labels (1 for anomaly, 0 for normal)
+            timestep_scores: Time-step level anomaly scores (batch_size, seq_len)
+            sequence_scores: Sequence-level anomaly scores (batch_size,)
+            sequence_labels: Binary sequence labels (1 for anomaly, 0 for normal) (batch_size,)
         """
-        anomaly_scores = self.compute_anomaly_score(x)
+        # Compute time-step level anomaly scores
+        timestep_scores = self.compute_anomaly_score(x)  # (batch_size, seq_len)
         
-        if threshold is None:
-            # Use 95th percentile as threshold (POT-K method approximation)
-            threshold = torch.quantile(anomaly_scores, 0.95)
+        # Aggregate to sequence level based on method
+        if aggregation_method == 'max':
+            sequence_scores = timestep_scores.max(dim=1)[0]  # (batch_size,)
+        elif aggregation_method == 'mean':
+            sequence_scores = timestep_scores.mean(dim=1)  # (batch_size,)
+        elif aggregation_method == 'min_count':
+            # Determine threshold for time-step level anomalies
+            if threshold is not None:
+                ts_threshold = threshold
+            elif threshold_percentile is not None:
+                ts_threshold = torch.quantile(timestep_scores, threshold_percentile / 100.0)
+            else:
+                ts_threshold = torch.quantile(timestep_scores, 0.99)
+            
+            # Count anomalous time steps per sequence
+            timestep_labels = (timestep_scores > ts_threshold).float()  # (batch_size, seq_len)
+            anomaly_ratios = timestep_labels.mean(dim=1)  # (batch_size,)
+            
+            # Sequence is anomalous if >= min_anomaly_ratio of time steps are anomalous
+            sequence_labels = (anomaly_ratios >= min_anomaly_ratio).float()
+            return timestep_scores, anomaly_ratios, sequence_labels
+        else:
+            raise ValueError(f"Unknown aggregation method: {aggregation_method}")
         
-        anomaly_labels = (anomaly_scores > threshold).float()
+        # Determine threshold for sequence-level scores
+        if threshold is not None:
+            seq_threshold = threshold
+        elif threshold_percentile is not None:
+            seq_threshold = torch.quantile(sequence_scores, threshold_percentile / 100.0)
+        else:
+            # Use 99th percentile as default (more conservative than 95th)
+            seq_threshold = torch.quantile(sequence_scores, 0.99)
         
-        return anomaly_scores, anomaly_labels
+        sequence_labels = (sequence_scores > seq_threshold).float()
+        
+        return timestep_scores, sequence_scores, sequence_labels
 
 
 def create_metg_model(input_dim: int, **kwargs) -> METG:
@@ -495,7 +533,7 @@ if __name__ == "__main__":
     total_loss, loss_dict = model.compute_loss(x, transformer_out, gcn_out, attention_weights)
     
     # Compute anomaly scores
-    anomaly_scores, anomaly_labels = model.detect_anomalies(x)
+    timestep_scores, sequence_scores, sequence_labels = model.detect_anomalies(x)
     
     print(f"Model input shape: {x.shape}")
     print(f"Transformer output shape: {transformer_out.shape}")
@@ -503,5 +541,6 @@ if __name__ == "__main__":
     print(f"Attention weights shape: {attention_weights.shape}")
     print(f"Total loss: {total_loss.item():.4f}")
     print(f"Loss breakdown: {loss_dict}")
-    print(f"Anomaly scores shape: {anomaly_scores.shape}")
-    print(f"Number of detected anomalies: {anomaly_labels.sum().item()}")
+    print(f"Timestep scores shape: {timestep_scores.shape}")
+    print(f"Sequence scores shape: {sequence_scores.shape}")
+    print(f"Number of detected anomalies: {sequence_labels.sum().item()}")

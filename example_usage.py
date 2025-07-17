@@ -157,67 +157,126 @@ def train_model(model, train_data, num_epochs=50, learning_rate=5e-5, device='cp
     return loss_history
 
 
-def evaluate_model(model, test_data, test_labels, device='cpu'):
+def evaluate_model(model, test_data, test_labels, device='cpu', enhanced_evaluation=True):
     """
-    Evaluate the trained model on test data.
+    Evaluate the trained model on test data with enhanced evaluation capabilities.
     
     Args:
         model: Trained METG model
         test_data: Test data tensor
         test_labels: Ground truth labels
         device: Device to evaluate on
+        enhanced_evaluation: Whether to use enhanced evaluation with ROC curves and threshold tuning
         
     Returns:
         results: Dictionary containing evaluation metrics
     """
-    model.to(device)
-    model.eval()
+    if enhanced_evaluation:
+        # Use the new enhanced evaluation utilities
+        from evaluation_utils import evaluate_anomaly_detection, compare_aggregation_methods
+        
+        print("=" * 60)
+        print("ENHANCED ANOMALY DETECTION EVALUATION")
+        print("=" * 60)
+        
+        # Compare different aggregation methods
+        comparison_results = compare_aggregation_methods(
+            model=model,
+            test_data=test_data,
+            test_labels=test_labels,
+            device=device,
+            methods=['max', 'mean', 'min_count'],
+            min_anomaly_ratio=0.1,
+            save_plots=True
+        )
+        
+        # Get the best performing method
+        best_method = None
+        best_f1 = 0
+        for method, result in comparison_results.items():
+            f1 = result['best_threshold']['metrics']['f1_score']
+            if f1 > best_f1:
+                best_f1 = f1
+                best_method = method
+        
+        print(f"\n" + "=" * 60)
+        print(f"DETAILED EVALUATION WITH BEST METHOD: {best_method.upper()}")
+        print("=" * 60)
+        
+        # Detailed evaluation with the best method
+        detailed_results = evaluate_anomaly_detection(
+            model=model,
+            test_data=test_data,
+            test_labels=test_labels,
+            device=device,
+            aggregation_method=best_method,
+            threshold_percentiles=[90, 95, 97, 99, 99.5, 99.9],
+            min_anomaly_ratio=0.1,
+            plot_results=True,
+            save_plots=True,
+            plot_prefix=f'metg_detailed_{best_method}'
+        )
+        
+        return {
+            'comparison_results': comparison_results,
+            'detailed_results': detailed_results,
+            'best_method': best_method,
+            'enhanced': True
+        }
     
-    print("Evaluating model...")
-    
-    # Compute anomaly scores
-    batch_size = 32
-    all_scores = []
-    all_predictions = []
-    
-    with torch.no_grad():
-        for i in range(0, len(test_data), batch_size):
-            batch_data = test_data[i:i+batch_size].to(device)
-            scores, predictions = model.detect_anomalies(batch_data)
-            
-            # Take max score across time steps for sequence-level prediction
-            seq_scores = scores.max(dim=1)[0]
-            seq_predictions = predictions.max(dim=1)[0]
-            
-            all_scores.extend(seq_scores.cpu().numpy())
-            all_predictions.extend(seq_predictions.cpu().numpy())
-    
-    all_scores = np.array(all_scores)
-    all_predictions = np.array(all_predictions)
-    
-    # Compute metrics
-    precision = precision_score(test_labels, all_predictions)
-    recall = recall_score(test_labels, all_predictions)
-    f1 = f1_score(test_labels, all_predictions)
-    
-    results = {
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
-        'anomaly_scores': all_scores,
-        'predictions': all_predictions
-    }
-    
-    print("\nEvaluation Results:")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"F1-Score: {f1:.4f}")
-    print(f"Detected {all_predictions.sum()} out of {test_labels.sum()} actual anomalies")
-    
-    return results
+    else:
+        # Legacy evaluation method for backward compatibility
+        model.to(device)
+        model.eval()
+        
+        print("Using legacy evaluation method...")
+        
+        # Compute anomaly scores
+        batch_size = 32
+        all_timestep_scores = []
+        all_sequence_scores = []
+        all_predictions = []
+        
+        with torch.no_grad():
+            for i in range(0, len(test_data), batch_size):
+                batch_data = test_data[i:i+batch_size].to(device)
+                timestep_scores, sequence_scores, sequence_predictions = model.detect_anomalies(
+                    batch_data, aggregation_method='max'
+                )
+                
+                all_timestep_scores.extend(timestep_scores.cpu().numpy())
+                all_sequence_scores.extend(sequence_scores.cpu().numpy())
+                all_predictions.extend(sequence_predictions.cpu().numpy())
+        
+        all_timestep_scores = np.array(all_timestep_scores)
+        all_sequence_scores = np.array(all_sequence_scores)
+        all_predictions = np.array(all_predictions)
+        
+        # Compute metrics
+        precision = precision_score(test_labels, all_predictions, zero_division=0)
+        recall = recall_score(test_labels, all_predictions, zero_division=0)
+        f1 = f1_score(test_labels, all_predictions, zero_division=0)
+        
+        results = {
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
+            'timestep_scores': all_timestep_scores,
+            'sequence_scores': all_sequence_scores,
+            'predictions': all_predictions,
+            'enhanced': False
+        }
+        
+        print("\nLegacy Evaluation Results:")
+        print(f"Precision: {precision:.4f}")
+        print(f"Recall: {recall:.4f}")
+        print(f"F1-Score: {f1:.4f}")
+        print(f"Detected {all_predictions.sum()} out of {test_labels.sum()} actual anomalies")
+        
+        return results
 
 
-def visualize_results(loss_history, test_data, test_labels, anomaly_scores, predictions):
+def visualize_results(loss_history, test_data, test_labels, results):
     """
     Visualize training loss and detection results.
     
@@ -225,63 +284,108 @@ def visualize_results(loss_history, test_data, test_labels, anomaly_scores, pred
         loss_history: Training loss history
         test_data: Test data for visualization
         test_labels: Ground truth labels
-        anomaly_scores: Computed anomaly scores
-        predictions: Model predictions
+        results: Evaluation results (can be legacy or enhanced format)
     """
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-    
-    # Plot 1: Training loss
-    ax1.plot(loss_history)
-    ax1.set_title('Training Loss')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Loss')
-    ax1.grid(True)
-    
-    # Plot 2: Anomaly score distribution
-    normal_scores = anomaly_scores[test_labels == 0]
-    anomaly_scores_true = anomaly_scores[test_labels == 1]
-    
-    ax2.hist(normal_scores, bins=30, alpha=0.7, label='Normal', density=True)
-    ax2.hist(anomaly_scores_true, bins=30, alpha=0.7, label='Anomaly', density=True)
-    ax2.set_title('Anomaly Score Distribution')
-    ax2.set_xlabel('Anomaly Score')
-    ax2.set_ylabel('Density')
-    ax2.legend()
-    ax2.grid(True)
-    
-    # Plot 3: Sample time series (normal)
-    normal_idx = np.where(test_labels == 0)[0][0]
-    sample_normal = test_data[normal_idx, :, :3]  # Show first 3 features
-    time_steps = range(len(sample_normal))
-    
-    for i in range(3):
-        ax3.plot(time_steps, sample_normal[:, i], label=f'Feature {i+1}')
-    ax3.set_title(f'Normal Sample (Score: {anomaly_scores[normal_idx]:.3f})')
-    ax3.set_xlabel('Time Step')
-    ax3.set_ylabel('Value')
-    ax3.legend()
-    ax3.grid(True)
-    
-    # Plot 4: Sample time series (anomaly)
-    if len(np.where(test_labels == 1)[0]) > 0:
-        anomaly_idx = np.where(test_labels == 1)[0][0]
-        sample_anomaly = test_data[anomaly_idx, :, :3]  # Show first 3 features
+    if results.get('enhanced', False):
+        # Enhanced results - plotting is handled by evaluation_utils
+        print("Enhanced evaluation plots have been generated by the evaluation utilities.")
+        
+        # Still show training loss
+        plt.figure(figsize=(10, 4))
+        plt.subplot(1, 2, 1)
+        plt.plot(loss_history)
+        plt.title('Training Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.grid(True)
+        
+        # Show summary of best method
+        best_method = results['best_method']
+        detailed_results = results['detailed_results']
+        best_threshold_info = detailed_results['best_threshold']
+        
+        plt.subplot(1, 2, 2)
+        metrics = ['Precision', 'Recall', 'F1-Score']
+        values = [
+            best_threshold_info['metrics']['precision'],
+            best_threshold_info['metrics']['recall'],
+            best_threshold_info['metrics']['f1_score']
+        ]
+        colors = ['blue', 'red', 'green']
+        
+        bars = plt.bar(metrics, values, color=colors, alpha=0.7)
+        plt.title(f'Best Performance ({best_method.capitalize()} aggregation)')
+        plt.ylabel('Score')
+        plt.ylim(0, 1.0)
+        
+        # Add value labels on bars
+        for bar, value in zip(bars, values):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                    f'{value:.3f}', ha='center', va='bottom')
+        
+        plt.tight_layout()
+        plt.savefig('metg_training_summary.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+    else:
+        # Legacy visualization
+        anomaly_scores = results.get('sequence_scores', results.get('anomaly_scores', []))
+        predictions = results['predictions']
+        
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Plot 1: Training loss
+        ax1.plot(loss_history)
+        ax1.set_title('Training Loss')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Loss')
+        ax1.grid(True)
+        
+        # Plot 2: Anomaly score distribution
+        normal_scores = anomaly_scores[test_labels == 0]
+        anomaly_scores_true = anomaly_scores[test_labels == 1]
+        
+        ax2.hist(normal_scores, bins=30, alpha=0.7, label='Normal', density=True)
+        ax2.hist(anomaly_scores_true, bins=30, alpha=0.7, label='Anomaly', density=True)
+        ax2.set_title('Anomaly Score Distribution')
+        ax2.set_xlabel('Anomaly Score')
+        ax2.set_ylabel('Density')
+        ax2.legend()
+        ax2.grid(True)
+        
+        # Plot 3: Sample time series (normal)
+        normal_idx = np.where(test_labels == 0)[0][0]
+        sample_normal = test_data[normal_idx, :, :3]  # Show first 3 features
+        time_steps = range(len(sample_normal))
         
         for i in range(3):
-            ax4.plot(time_steps, sample_anomaly[:, i], label=f'Feature {i+1}')
-        ax4.set_title(f'Anomaly Sample (Score: {anomaly_scores[anomaly_idx]:.3f})')
-    else:
-        ax4.text(0.5, 0.5, 'No anomalies in test set', ha='center', va='center', transform=ax4.transAxes)
-        ax4.set_title('No Anomaly Sample Available')
-    
-    ax4.set_xlabel('Time Step')
-    ax4.set_ylabel('Value')
-    ax4.legend()
-    ax4.grid(True)
-    
-    plt.tight_layout()
-    plt.savefig('metg_results.png', dpi=300, bbox_inches='tight')
-    plt.show()
+            ax3.plot(time_steps, sample_normal[:, i], label=f'Feature {i+1}')
+        ax3.set_title(f'Normal Sample (Score: {anomaly_scores[normal_idx]:.3f})')
+        ax3.set_xlabel('Time Step')
+        ax3.set_ylabel('Value')
+        ax3.legend()
+        ax3.grid(True)
+        
+        # Plot 4: Sample time series (anomaly)
+        if len(np.where(test_labels == 1)[0]) > 0:
+            anomaly_idx = np.where(test_labels == 1)[0][0]
+            sample_anomaly = test_data[anomaly_idx, :, :3]  # Show first 3 features
+            
+            for i in range(3):
+                ax4.plot(time_steps, sample_anomaly[:, i], label=f'Feature {i+1}')
+            ax4.set_title(f'Anomaly Sample (Score: {anomaly_scores[anomaly_idx]:.3f})')
+        else:
+            ax4.text(0.5, 0.5, 'No anomalies in test set', ha='center', va='center', transform=ax4.transAxes)
+            ax4.set_title('No Anomaly Sample Available')
+        
+        ax4.set_xlabel('Time Step')
+        ax4.set_ylabel('Value')
+        ax4.legend()
+        ax4.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig('metg_results.png', dpi=300, bbox_inches='tight')
+        plt.show()
 
 
 def main():
@@ -363,18 +467,18 @@ def main():
         loss_history=loss_history,
         test_data=test_data.numpy(),
         test_labels=test_labels,
-        anomaly_scores=results['anomaly_scores'],
-        predictions=results['predictions']
+        results=results
     )
     
     # Save model
     torch.save(model.state_dict(), 'metg_model.pth')
     print("\nModel saved as 'metg_model.pth'")
     
-    # Print detailed classification report
-    print("\nDetailed Classification Report:")
-    print(classification_report(test_labels, results['predictions'], 
-                              target_names=['Normal', 'Anomaly']))
+    # Print detailed classification report for legacy mode
+    if not results.get('enhanced', False):
+        print("\nDetailed Classification Report:")
+        print(classification_report(test_labels, results['predictions'], 
+                                  target_names=['Normal', 'Anomaly']))
 
 
 if __name__ == "__main__":

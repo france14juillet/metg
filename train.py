@@ -187,14 +187,12 @@ def train_model(args):
     with torch.no_grad():
         for i in range(0, len(test_data), args.batch_size):
             batch_data = test_data[i:i+args.batch_size].to(device)
-            scores, predictions = model.detect_anomalies(batch_data)
+            timestep_scores, sequence_scores, sequence_predictions = model.detect_anomalies(
+                batch_data, aggregation_method='max'
+            )
             
-            # Take max score across time steps for sequence-level prediction
-            seq_scores = scores.max(dim=1)[0]
-            seq_predictions = predictions.max(dim=1)[0]
-            
-            all_scores.extend(seq_scores.cpu().numpy())
-            all_predictions.extend(seq_predictions.cpu().numpy())
+            all_scores.extend(sequence_scores.cpu().numpy())
+            all_predictions.extend(sequence_predictions.cpu().numpy())
     
     all_scores = np.array(all_scores)
     all_predictions = np.array(all_predictions)
