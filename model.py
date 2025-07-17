@@ -433,18 +433,37 @@ class METG(nn.Module):
         """
         Detect anomalies in input sequences with configurable thresholds and aggregation.
         
+        This method addresses the issues in the original anomaly detection:
+        - Configurable aggregation methods instead of fixed max() 
+        - Tunable thresholds instead of fixed 95th percentile
+        - Returns both time-step and sequence-level scores for analysis
+        
         Args:
             x: Input tensor (batch_size, seq_len, input_dim)
             threshold: Fixed anomaly threshold (overrides threshold_percentile if provided)
             threshold_percentile: Percentile for threshold (default: None, uses 99th percentile)
             aggregation_method: Method to aggregate time-step scores to sequence level
-                               Options: 'max', 'mean', 'min_count'
+                               - 'max': Take maximum score (most sensitive, original method)
+                               - 'mean': Take average score (more robust to outliers)
+                               - 'min_count': Count anomalous time steps (most conservative)
             min_anomaly_ratio: For 'min_count' method, minimum ratio of anomalous time steps
+                              needed to classify sequence as anomalous (default: 0.1 = 10%)
             
         Returns:
             timestep_scores: Time-step level anomaly scores (batch_size, seq_len)
             sequence_scores: Sequence-level anomaly scores (batch_size,)
             sequence_labels: Binary sequence labels (1 for anomaly, 0 for normal) (batch_size,)
+            
+        Example:
+            # Conservative detection (fewer false positives)
+            ts_scores, seq_scores, labels = model.detect_anomalies(
+                x, threshold_percentile=99, aggregation_method='mean'
+            )
+            
+            # Very conservative (requires 20% of time steps to be anomalous)
+            ts_scores, ratios, labels = model.detect_anomalies(
+                x, aggregation_method='min_count', min_anomaly_ratio=0.2
+            )
         """
         # Compute time-step level anomaly scores
         timestep_scores = self.compute_anomaly_score(x)  # (batch_size, seq_len)

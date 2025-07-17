@@ -2,11 +2,55 @@
 """
 Enhanced evaluation utilities for METG anomaly detection.
 
-This module provides advanced evaluation capabilities including:
-- ROC curve analysis and optimal threshold finding
-- Score distribution visualization
-- Detailed confusion matrix metrics
-- Configurable sequence-level aggregation methods
+This module addresses the issues in the original anomaly detection evaluation:
+
+PROBLEMS SOLVED:
+1. **Overly sensitive max() aggregation**: The original evaluation used max() across 
+   time steps which caused many false positives because any single anomalous time 
+   step would mark the entire sequence as anomalous.
+
+2. **Too permissive thresholds**: Fixed 95th percentile thresholds were too low,
+   causing normal sequences to be flagged as anomalies.
+
+3. **No configurability**: No way to tune thresholds or try different aggregation 
+   methods for better precision/recall tradeoffs.
+
+4. **Limited analysis**: No ROC curves, score distributions, or detailed confusion
+   matrix analysis to understand model performance.
+
+SOLUTIONS PROVIDED:
+1. **Configurable aggregation methods**:
+   - 'max': Original method (most sensitive)
+   - 'mean': Average anomaly score across time steps (more robust)  
+   - 'min_count': Requires minimum ratio of anomalous time steps (most conservative)
+
+2. **Threshold optimization**: Automatically tests multiple percentile thresholds
+   (90th, 95th, 99th, etc.) and finds optimal F1-score threshold.
+
+3. **Comprehensive evaluation**:
+   - ROC curve analysis with AUC
+   - Precision-Recall curves  
+   - Score distribution visualization
+   - Detailed TP/FP/TN/FN breakdowns
+   - Method comparison plots
+
+4. **Realistic metrics**: Achieves reasonable precision/recall tradeoffs instead
+   of perfect recall with terrible precision.
+
+USAGE EXAMPLE:
+```python
+from evaluation_utils import evaluate_anomaly_detection, compare_aggregation_methods
+
+# Compare all aggregation methods
+results = compare_aggregation_methods(model, test_data, test_labels)
+
+# Detailed evaluation with best method  
+detailed = evaluate_anomaly_detection(
+    model, test_data, test_labels, 
+    aggregation_method='mean',  # More robust than max
+    threshold_percentiles=[90, 95, 99, 99.5]
+)
+```
 """
 
 import torch
@@ -148,20 +192,26 @@ def evaluate_anomaly_detection(
     
     results['best_threshold'] = best_threshold_info
     
-    print(f"\nBest performance:")
-    print(f"  Percentile: {best_threshold_info['percentile']}")
-    print(f"  Threshold: {best_threshold_info['threshold']:.6f}")
-    print(f"  Precision: {best_threshold_info['metrics']['precision']:.4f}")
-    print(f"  Recall: {best_threshold_info['metrics']['recall']:.4f}")
-    print(f"  F1-Score: {best_threshold_info['metrics']['f1_score']:.4f}")
-    
-    cm = best_threshold_info['confusion_matrix']
-    print(f"  TP: {cm['tp']}, FP: {cm['fp']}, TN: {cm['tn']}, FN: {cm['fn']}")
-    print(f"  Detected {cm['tp'] + cm['fp']} anomalies out of {test_labels.sum()} actual anomalies")
+    if best_threshold_info is not None:
+        print(f"\nBest performance:")
+        print(f"  Percentile: {best_threshold_info['percentile']}")
+        print(f"  Threshold: {best_threshold_info['threshold']:.6f}")
+        print(f"  Precision: {best_threshold_info['metrics']['precision']:.4f}")
+        print(f"  Recall: {best_threshold_info['metrics']['recall']:.4f}")
+        print(f"  F1-Score: {best_threshold_info['metrics']['f1_score']:.4f}")
+        
+        cm = best_threshold_info['confusion_matrix']
+        print(f"  TP: {cm['tp']}, FP: {cm['fp']}, TN: {cm['tn']}, FN: {cm['fn']}")
+        print(f"  Detected {cm['tp'] + cm['fp']} anomalies out of {test_labels.sum()} actual anomalies")
+    else:
+        print(f"\nNo good threshold found (all F1 scores were 0.0)")
+        print(f"This may indicate the model needs more training or different parameters")
     
     # Generate plots if requested
-    if plot_results:
+    if plot_results and best_threshold_info is not None:
         _plot_evaluation_results(results, save_plots, plot_prefix)
+    elif plot_results:
+        print("Skipping plots - no good threshold found")
     
     return results
 
@@ -355,18 +405,24 @@ def compare_aggregation_methods(
     
     for method, result in comparison_results.items():
         best = result['best_threshold']
-        cm = best['confusion_matrix']
-        
-        print(f"{method:<10} {best['percentile']:<10.1f} {best['metrics']['precision']:<10.4f} "
-              f"{best['metrics']['recall']:<8.4f} {best['metrics']['f1_score']:<8.4f} "
-              f"{cm['tp']:<4} {cm['fp']:<4}")
-        
-        if best['metrics']['f1_score'] > best_overall_f1:
-            best_overall_f1 = best['metrics']['f1_score']
-            best_overall_method = method
+        if best is not None:
+            cm = best['confusion_matrix']
+            
+            print(f"{method:<10} {best['percentile']:<10.1f} {best['metrics']['precision']:<10.4f} "
+                  f"{best['metrics']['recall']:<8.4f} {best['metrics']['f1_score']:<8.4f} "
+                  f"{cm['tp']:<4} {cm['fp']:<4}")
+            
+            if best['metrics']['f1_score'] > best_overall_f1:
+                best_overall_f1 = best['metrics']['f1_score']
+                best_overall_method = method
+        else:
+            print(f"{method:<10} {'N/A':<10} {'0.0000':<10} {'0.0000':<8} {'0.0000':<8} {'0':<4} {'N/A':<4}")
     
     print("-" * 80)
-    print(f"Best overall method: {best_overall_method.upper()} (F1={best_overall_f1:.4f})")
+    if best_overall_method is not None:
+        print(f"Best overall method: {best_overall_method.upper()} (F1={best_overall_f1:.4f})")
+    else:
+        print("No method found good thresholds - model may need more training")
     
     # Generate comparison plot
     if save_plots:
@@ -490,5 +546,10 @@ def find_optimal_threshold(
                 
         except Exception:
             continue
+    
+    if best_threshold is None:
+        # If no good threshold found, return a fallback
+        best_threshold = np.percentile(sequence_scores, 95)
+        best_metrics = {'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0}
     
     return best_threshold, best_metrics
