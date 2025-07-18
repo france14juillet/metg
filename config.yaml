@@ -1,0 +1,68 @@
+# Configuration file for METG model training and evaluation
+
+# Model parameters
+window_size: 100
+hidden_size: 64
+batch_size: 32
+n_epochs: 50
+learning_rate: 0.0001
+
+# METG specific parameters
+d_model: 512
+memory_size: 100
+nhead: 8
+num_layers: 3
+k_neighbors: 3
+temperature: 1.0
+
+# Data preprocessing
+columns_to_drop:
+  - "timestamp"
+  - "id"
+  - "label"
+  - "source"
+  - "index"
+  - "cycle_id"
+  - "run_id"
+  - "batch_id"
+  - "session_id"
+  - "measurement_id"
+  - "datetime"
+  - "time"
+  - "date"
+
+# Loss function weights
+lambda1: 1.0  # GCN reconstruction loss weight
+lambda2: 0.01  # Sparsity loss weight
+
+# Training parameters
+train_split: 0.8
+validation_split: 0.1
+test_split: 0.1
+
+# Anomaly detection parameters
+anomaly_threshold_percentile: 95
+aggregation_method: "max"  # max, mean, min_count
+min_anomaly_ratio: 0.1
+
+# Data augmentation
+augmentation:
+  enabled: true
+  noise_std: 0.01
+  scale_range: [0.9, 1.1]
+  p_noise: 0.5
+  p_scale: 0.5
+
+# Output directories
+output_dir: "output"
+models_dir: "output/models"
+concatenated_files_dir: "output/concatenated_files"
+anomaly_scores_dir: "output/anomaly_scores"
+threshold_dir: "output/threshold"
+plots_dir: "output/plots"
+
+# Device configuration
+device: "auto"  # auto, cpu, cuda
+
+# Random seed for reproducibility
+random_seed: 42
